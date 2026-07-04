@@ -17,13 +17,22 @@ def validate_token(token):
     except:
         return None
 
-def send_message(token, channel_id, content):
-    """Send a message to a channel using a user token."""
+def send_message(token, channel_id, content, image_url=None):
+    """Send a message to a channel using a user token.
+    
+    If image_url is provided, sends the message with an embedded image.
+    """
     try:
+        data = {"content": content}
+        
+        if image_url:
+            # Send as embed with image
+            data["embeds"] = [{"image": {"url": image_url}}]
+        
         r = requests.post(
             f"{API_BASE}/channels/{channel_id}/messages",
             headers=_headers(token),
-            json={"content": content},
+            json=data,
             timeout=10
         )
         return {"status": r.status_code, "data": r.json() if r.text else {}}
