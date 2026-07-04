@@ -1,0 +1,9 @@
+{
+  "build": {
+    "builder": "NIXPACKS",
+    "buildCommand": "cd discord-tool-bot && pip install -r requirements.txt"
+  },
+  "deploy": {
+    "startCommand": "cd discord-tool-bot && python main.py"
+  }
+}
