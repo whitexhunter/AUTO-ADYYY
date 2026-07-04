@@ -229,7 +229,7 @@ class CampaignsListView(discord.ui.View):
         opts = [discord.SelectOption(label=f"{c.get('name','?')} ({c.get('messages_sent',0)} sent)", value=c["id"]) for c in camps[:25]]
         await interaction.response.edit_message(view=CampaignResumeSelectView(self.discord_id, opts))
 
-    @discord.ui.button(label="⏸️ Pause All", style=discord.ButtonStyle.warning, row=0)
+    @discord.ui.button(label="⏸️ Pause All", style=discord.ButtonStyle.grey, row=0)
     async def pause_btn(self, btn, interaction):
         for c in storage.get_user_campaigns(self.discord_id):
             if c.get("status") == "running":
