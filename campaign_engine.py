@@ -32,16 +32,19 @@ def _run_campaign(campaign_id):
         return
 
     channels = campaign["channels"]
-    messages = campaign["messages"]
+    messages = campaign["messages"]  # list of dicts: [{"content": "...", "image_url": "..."}]
     delay = max(campaign.get("delay", 1), 1)
 
     for ch_id in channels:
-        for msg in messages:
+        for msg_obj in messages:
             if campaign_id in _running_campaigns and not _running_campaigns[campaign_id]:
                 storage.update_campaign(campaign_id, {"status": "paused"})
                 return
 
-            result = discord_api.send_message(token, ch_id, msg)
+            content = msg_obj.get("content", "")
+            image_url = msg_obj.get("image_url", None)
+            
+            result = discord_api.send_message(token, ch_id, content, image_url)
             sent_ok = result.get("status") == 200
 
             stats = storage.get_campaign_by_id(campaign_id)
