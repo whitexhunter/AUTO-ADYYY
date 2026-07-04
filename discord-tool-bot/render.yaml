@@ -1,0 +1,13 @@
+services:
+  - type: worker
+    name: discord-tool-bot
+    runtime: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: DISCORD_BOT_TOKEN
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
