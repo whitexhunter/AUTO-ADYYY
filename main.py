@@ -168,42 +168,32 @@ async def campaign_create(
         await ctx.respond(f"❌ Account `{account_id}` not found.", ephemeral=True)
         return
 
-    msg_list = [m.strip() for m in messages.split("|") if m.strip()]
+    raw_message_list = [m.strip() for m in messages.split("||") if m.strip()]
+    msg_list = [{"content": m} for m in raw_message_list]
     cid = str(__import__("uuid").uuid4())
 
     if ctype == "channel":
-        ch_list = [c.strip() for c in channels.split(",") if c.strip()]
-        if not ch_list:
-            await ctx.respond("❌ Need at least 1 channel.", ephemeral=True)
-            return
-        storage.add_campaign({
-            "id": cid, "discord_id": did, "account_id": target["id"],
-            "name": name, "type": "channel", "channels": ch_list,
-            "messages": msg_list, "delay": max(delay, 1),
-            "status": "idle", "messages_sent": 0, "messages_failed": 0,
-            "created_at": datetime.utcnow().isoformat()
-        })
-        campaign_engine.start_campaign(cid)
-        await ctx.respond(embed=discord.Embed(
-            title=f"✅ {name} Running!", color=discord.Color.green()
-        ).add_field(name="Channels", value=str(len(ch_list)))
-         .add_field(name="Messages", value=str(len(msg_list))))
-    else:
-        plan = storage.get_user_effective_plan(did)
-        if "dm_auto_reply" not in storage.get_plan_features(plan):
-            await ctx.respond("❌ DM Auto-Reply requires V3+.", ephemeral=True)
-            return
-        storage.add_campaign({
-            "id": cid, "discord_id": did, "account_id": target["id"],
-            "name": name, "type": "dm_auto_reply",
-            "messages": msg_list, "keywords": [],
-            "status": "running", "replied_count": 0, "last_replied_id": "",
-            "created_at": datetime.utcnow().isoformat()
-        })
-        campaign_engine.start_dm_responder(did)
-        await ctx.respond(embed=discord.Embed(
-            title=f"✅ {name} Active!", color=discord.Color.green()
-        ).add_field(name="Replies", value=str(len(msg_list))))
+    ch_list = [c.strip() for c in channels.split(",") if c.strip()]
+    if not ch_list:
+        await ctx.respond("❌ Need at least 1 channel.", ephemeral=True)
+        return
+    
+    # Parse messages (separated by ||)
+    raw_msgs = [m.strip() for m in messages.split("||") if m.strip()]
+    parsed_messages = [{"content": m} for m in raw_msgs]
+    
+    storage.add_campaign({
+        "id": cid, "discord_id": did, "account_id": target["id"],
+        "name": name, "type": "channel", "channels": ch_list,
+        "messages": parsed_messages, "delay": max(delay, 1),
+        "status": "idle", "messages_sent": 0, "messages_failed": 0,
+        "created_at": datetime.utcnow().isoformat()
+    })
+    campaign_engine.start_campaign(cid)
+    await ctx.respond(embed=discord.Embed(
+        title=f"✅ {name} Running!", color=discord.Color.green()
+    ).add_field(name="Channels", value=str(len(ch_list)))
+     .add_field(name="Messages", value=str(len(parsed_messages))))
 
 
 @bot.slash_command(name="genkey", description="Generate license keys (admin-only)")
