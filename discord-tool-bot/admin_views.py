@@ -147,4 +147,121 @@ class AdminPanelView(discord.ui.View):
         
         users = storage.get_all_users()
         trials = sum(1 for u in users if u.get("trial_used"))
-        embed.add_field(name
+        embed.set_footer(text=f"Free trials used: {trials}")
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    @discord.ui.button(label="⚙️ System", style=discord.ButtonStyle.secondary, row=1)
+    async def system_btn(self, btn, interaction: discord.Interaction):
+        if not self._check(interaction):
+            return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+        
+        uptime_seconds = time.time() - _admin_views_start_time
+        uptime_str = f"{int(uptime_seconds // 3600)}h {int((uptime_seconds % 3600) // 60)}m {int(uptime_seconds % 60)}s"
+        
+        embed = discord.Embed(title="⚙️ System Info", color=discord.Color.dark_blue())
+        embed.add_field(name="🕐 Uptime", value=uptime_str, inline=True)
+        
+        data_sizes = []
+        for fname in storage.FILES:
+            path = os.path.join(storage.DATA_DIR, fname)
+            if os.path.exists(path):
+                size = os.path.getsize(path)
+                data_sizes.append(f"{fname}: {size / 1024:.1f}KB")
+        embed.add_field(name="💾 Data Files", value="\n".join(data_sizes) or "N/A", inline=False)
+        embed.add_field(name="🛡️ Admins", value="\n".join(ADMIN_IDS) or "None configured", inline=False)
+        
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    @discord.ui.button(label="🔑 Generate Key", style=discord.ButtonStyle.success, row=2)
+    async def genkey_btn(self, btn, interaction: discord.Interaction):
+        if not self._check(interaction):
+            return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+        modal = AdminGenKeyModal()
+        await interaction.response.send_modal(modal)
+    
+    @discord.ui.button(label="🔄 Refresh", style=discord.ButtonStyle.secondary, row=2)
+    async def refresh_btn(self, btn, interaction: discord.Interaction):
+        if not self._check(interaction):
+            return await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+        embed = _get_admin_overview_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
+class AdminGenKeyModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Generate License Keys")
+        
+        self.add_item(discord.ui.InputText(
+            label="Plan",
+            placeholder="v1, v2, v3, or lifetime",
+            required=True,
+            min_length=1,
+            max_length=10
+        ))
+        self.add_item(discord.ui.InputText(
+            label="Count (1-50)",
+            placeholder="5",
+            required=True,
+            min_length=1,
+            max_length=2
+        ))
+    
+    async def callback(self, interaction: discord.Interaction):
+        plan = self.children[0].value.strip().lower()
+        count_str = self.children[1].value.strip()
+        
+        valid_plans = ["v1", "v2", "v3", "lifetime"]
+        if plan not in valid_plans:
+            embed = discord.Embed(
+                title="❌ Invalid Plan",
+                description=f"Valid plans: {', '.join(valid_plans)}",
+                color=discord.Color.red()
+            )
+            await interaction.response.edit_message(embed=embed)
+            return
+        
+        try:
+            count = int(count_str)
+            if count < 1 or count > 50:
+                raise ValueError
+        except:
+            embed = discord.Embed(
+                title="❌ Invalid Count",
+                description="Enter a number between 1 and 50.",
+                color=discord.Color.red()
+            )
+            await interaction.response.edit_message(embed=embed)
+            return
+        
+        keys_generated = []
+        import string, secrets
+        for _ in range(count):
+            part1 = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(4))
+            part2 = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(4))
+            part3 = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(4))
+            key_str = f"HUNTER-{part1}-{part2}-{part3}"
+            
+            key_data = {
+                "key": key_str,
+                "plan": plan,
+                "created_at": datetime.utcnow().isoformat(),
+                "created_by": str(interaction.user.id),
+                "redeemed_by": None,
+                "redeemed_at": None
+            }
+            storage.add_key(key_data)
+            keys_generated.append(key_str)
+        
+        embed = discord.Embed(
+            title=f"✅ Generated {count} Keys",
+            description=f"Plan: **{plan.upper()}**",
+            color=discord.Color.green()
+        )
+        
+        # Show first 10 keys
+        key_list = "\n".join(keys_generated[:10])
+        if count > 10:
+            key_list += f"\n... and {count - 10} more"
+        embed.add_field(name="Keys", value=f"```{key_list}```", inline=False)
+        
+        await interaction.response.edit_message(embed=embed)
