@@ -463,19 +463,83 @@ class ChannelCampaignModal(discord.ui.Modal):
         super().__init__(title="New Channel Campaign")
         self.discord_id = did
         self.account_id = aid
-        self.add_item(discord.ui.InputText(label="Name", placeholder="My Campaign", max_length=50, required=True))
-        self.add_item(discord.ui.InputText(label="Channel IDs (comma-separated)", placeholder="123456789,987654321", required=True))
-        self.add_item(discord.ui.InputText(label="Messages (one per line)", style=discord.InputTextStyle.long, placeholder="Hello!\nSecond message!", required=True))
-        self.add_item(discord.ui.InputText(label="Delay (seconds, min 1)", placeholder="1", required=False, value="1"))
+        self.add_item(discord.ui.InputText(
+            label="Campaign Name",
+            placeholder="My Campaign",
+            max_length=50,
+            required=True
+        ))
+        self.add_item(discord.ui.InputText(
+            label="Channel IDs (comma-separated)",
+            placeholder="123456789,987654321",
+            required=True
+        ))
+        self.add_item(discord.ui.InputText(
+            label="Messages (separate with ||)",
+            style=discord.InputTextStyle.long,
+            placeholder="Hello! This is my first message. It can have\nmultiple lines and paragraphs.\n\nSee? All one message!\n||\nThis is my second message.\n||\nThird message here.",
+            required=True
+        ))
+        self.add_item(discord.ui.InputText(
+            label="Image URLs (optional, one per message)",
+            placeholder="https://i.imgur.com/abc.jpg || https://i.imgur.com/xyz.png\nLeave empty or match number of messages",
+            style=discord.InputTextStyle.long,
+            required=False
+        ))
+        self.add_item(discord.ui.InputText(
+            label="Delay (seconds, min 1)",
+            placeholder="1",
+            required=False,
+            value="1"
+        ))
 
     async def callback(self, interaction):
         name = self.children[0].value.strip()
         channels = [c.strip() for c in self.children[1].value.split(",") if c.strip()]
-        messages = [m.strip() for m in self.children[2].value.split("\n") if m.strip()]
-        delay = max(int(self.children[3].value or "1"), 1)
+        
+        # Messages separated by || — each block is ONE message (preserving newlines)
+        raw_messages = self.children[2].value.strip()
+        raw_message_list = [m.strip() for m in raw_messages.split("||") if m.strip()]
+        
+        # Image URLs — also separated by ||, one per message
+        raw_images = self.children[3].value.strip()
+        if raw_images:
+            image_list = [img.strip() for img in raw_images.split("||") if img.strip()]
+        else:
+            image_list = []
+        
+        # Build message objects
+        messages = []
+        for i, msg_content in enumerate(raw_message_list):
+            msg_obj = {"content": msg_content}
+            if i < len(image_list) and image_list[i]:
+                msg_obj["image_url"] = image_list[i]
+            messages.append(msg_obj)
+        
+        delay = max(int(self.children[4].value or "1"), 1)
+        
         if not channels or not messages:
-            await interaction.response.edit_message(embed=discord.Embed(title="❌ Missing fields", color=discord.Color.red()))
+            await interaction.response.edit_message(
+                embed=discord.Embed(title="❌ Missing fields", color=discord.Color.red()),
+                view=MainPanelView(self.discord_id)
+            )
             return
+        
+        # Check plan for image support
+        plan = storage.get_user_effective_plan(self.discord_id)
+        features = storage.get_plan_features(plan)
+        has_images = any(m.get("image_url") for m in messages)
+        if has_images and "image_attachments" not in features:
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="❌ Image Attachments Require V2+",
+                    description=f"Your plan ({storage.get_plan_name(plan)}) doesn't support image attachments. Upgrade to V2 ($5/mo) or higher.",
+                    color=discord.Color.red()
+                ),
+                view=MainPanelView(self.discord_id)
+            )
+            return
+        
         cid = str(uuid.uuid4())
         storage.add_campaign({
             "id": cid, "discord_id": self.discord_id, "account_id": self.account_id,
@@ -485,10 +549,22 @@ class ChannelCampaignModal(discord.ui.Modal):
             "created_at": datetime.utcnow().isoformat()
         })
         campaign_engine.start_campaign(cid)
+        
         embed = discord.Embed(title=f"✅ {name} Running!", color=discord.Color.green())
         embed.add_field(name="Channels", value=str(len(channels)), inline=True)
         embed.add_field(name="Messages", value=str(len(messages)), inline=True)
+        
+        msg_preview = []
+        for i, m in enumerate(messages[:3]):
+            content_preview = m["content"][:50] + "..." if len(m["content"]) > 50 else m["content"]
+            has_img = " 🖼️" if m.get("image_url") else ""
+            msg_preview.append(f"**MSG {i+1}:** {content_preview}{has_img}")
+        if len(messages) > 3:
+            msg_preview.append(f"... and {len(messages)-3} more")
+        embed.add_field(name="Preview", value="\n".join(msg_preview), inline=False)
+        
         embed.add_field(name="Delay", value=f"{delay}s", inline=True)
+        
         await interaction.response.edit_message(embed=embed, view=MainPanelView(self.discord_id))
 
 
