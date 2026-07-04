@@ -7,8 +7,6 @@ from crypto_utils import encrypt_token
 import campaign_engine
 
 
-# ─── Dashboard Helper ─────────────────────────────
-
 def _get_dashboard_embed(discord_id):
     user = storage.get_user(discord_id)
     if not user:
@@ -26,7 +24,11 @@ def _get_dashboard_embed(discord_id):
     paused = sum(1 for c in campaigns if c.get("status") == "paused")
     completed = sum(1 for c in campaigns if c.get("status") == "completed")
 
-    embed = discord.Embed(title="📊 Dashboard", color=discord.Color.blue(), timestamp=datetime.utcnow())
+    embed = discord.Embed(
+        title="📊 Dashboard",
+        color=discord.Color.blue(),
+        timestamp=datetime.utcnow()
+    )
     embed.add_field(name="📋 Plan", value=f"**{storage.get_plan_name(plan)}**", inline=True)
 
     # Active sub info
@@ -35,18 +37,39 @@ def _get_dashboard_embed(discord_id):
             try:
                 expires = datetime.fromisoformat(s["expires_at"])
                 if expires > datetime.utcnow():
-                    embed.add_field(name="⏳ Expires", value=f"<t:{int(expires.timestamp())}:R>", inline=True)
+                    embed.add_field(
+                        name="⏳ Expires",
+                        value=f"<t:{int(expires.timestamp())}:R>",
+                        inline=True
+                    )
                     break
             except:
                 pass
 
-    if user.get("trial_active"):
+    # Trial info
+    if user and user.get("trial_active"):
         try:
             te = datetime.fromisoformat(user["trial_expires_at"])
             if te > datetime.utcnow():
-                embed.add_field(name="🎯 Trial", value=f"<t:{int(te.timestamp())}:R>", inline=True)
+                embed.add_field(
+                    name="🎯 Trial",
+                    value=f"<t:{int(te.timestamp())}:R>",
+                    inline=True
+                )
         except:
             pass
+
+    # Check active access
+    has_access = _user_has_access(discord_id)
+    if not has_access:
+        embed.add_field(
+            name="⛔ Status",
+            value="**Subscription Expired** — Redeem a key or purchase to continue.",
+            inline=False
+        )
+        embed.color = discord.Color.red()
+    else:
+        embed.add_field(name="✅ Status", value="**Active**", inline=True)
 
     embed.add_field(name="👤 Accounts", value=f"{len(accounts)}/{max_acc}", inline=True)
     embed.add_field(name="📨 Campaigns", value=str(len(campaigns)), inline=True)
@@ -55,10 +78,108 @@ def _get_dashboard_embed(discord_id):
     embed.add_field(name="▶️ Running", value=str(running), inline=True)
     embed.add_field(name="⏸️ Paused", value=str(paused), inline=True)
     embed.add_field(name="✅ Completed", value=str(completed), inline=True)
+
     return embed
 
 
-# ─── Main Panel View ──────────────────────────────
+def _user_has_access(discord_id):
+    """Check if user has active subscription or trial."""
+    user = storage.get_user(discord_id)
+    if user and user.get("trial_active"):
+        try:
+            if datetime.fromisoformat(user["trial_expires_at"]) > datetime.utcnow():
+                return True
+        except:
+            pass
+    for sub in storage.get_user_subscriptions(discord_id):
+        if sub["status"] == "confirmed":
+            try:
+                if sub["plan"] == "lifetime":
+                    return True
+                if datetime.fromisoformat(sub["expires_at"]) > datetime.utcnow():
+                    return True
+            except:
+                pass
+    return False
+
+
+def get_panel_view(discord_id, has_access):
+    """Return the correct embed and view based on user's access level."""
+    embed = _get_dashboard_embed(discord_id)
+
+    if has_access:
+        return embed, MainPanelView(discord_id)
+    else:
+        user = storage.get_user(discord_id) or {}
+        trial_used = user.get("trial_used", False)
+        return embed, LockedPanelView(discord_id, trial_used)
+
+
+# ─── LOCKED PANEL (No Subscription) ───────────────
+
+class LockedPanelView(discord.ui.View):
+    """Shown to users with no active subscription — only redeem/trial options."""
+    def __init__(self, discord_id, trial_used=False):
+        super().__init__(timeout=300)
+        self.discord_id = discord_id
+        self.trial_used = trial_used
+
+    @discord.ui.button(label="🔑 Redeem Key", style=discord.ButtonStyle.primary, row=0)
+    async def redeem_btn(self, btn, interaction: discord.Interaction):
+        await interaction.response.send_modal(RedeemKeyModal(self.discord_id))
+
+    @discord.ui.button(label="🎯 Free Trial (10min V3)", style=discord.ButtonStyle.success, row=0)
+    async def trial_btn(self, btn, interaction: discord.Interaction):
+        if self.trial_used:
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="❌ Trial Already Used",
+                    description="You have already used your free trial. Redeem a license key to continue.",
+                    color=discord.Color.red()
+                ),
+                view=self
+            )
+            return
+        exp = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
+        storage.upsert_user(self.discord_id, {
+            "trial_active": True,
+            "trial_expires_at": exp,
+            "trial_used": True
+        })
+        embed = discord.Embed(
+            title="🎯 Free Trial Activated!",
+            description=f"**10 minutes of V3** — expires <t:{int((datetime.utcnow()+timedelta(minutes=10)).timestamp())}:R>",
+            color=discord.Color.green()
+        )
+        # Refresh to full panel
+        full_embed = _get_dashboard_embed(self.discord_id)
+        await interaction.response.edit_message(embed=full_embed, view=MainPanelView(self.discord_id))
+
+    @discord.ui.button(label="💎 Plans & Buy", style=discord.ButtonStyle.danger, row=1)
+    async def plans_btn(self, btn, interaction: discord.Interaction):
+        embed = discord.Embed(title="💎 Plans & Pricing", color=discord.Color.gold())
+        for pname, pdata in storage.PLANS.items():
+            price = (
+                "**$0 Free**" if pname == "free" else
+                "**$30 One-Time**" if pname == "lifetime" else
+                f"**${pdata['price']}/month**"
+            )
+            features = "\n".join(f"• {f.replace('_',' ').title()}" for f in pdata["features"])
+            embed.add_field(
+                name=f"{pdata['name']} — {price}",
+                value=f"Accounts: {pdata['accounts']}\n{features}",
+                inline=False
+            )
+        embed.set_footer(text="Contact admin to purchase and get a license key.")
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="🔄 Refresh", style=discord.ButtonStyle.secondary, row=1)
+    async def refresh_btn(self, btn, interaction: discord.Interaction):
+        embed = _get_dashboard_embed(self.discord_id)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
+# ─── FULL PANEL (Active Subscription) ─────────────
 
 class MainPanelView(discord.ui.View):
     def __init__(self, discord_id):
@@ -67,7 +188,9 @@ class MainPanelView(discord.ui.View):
 
     @discord.ui.button(label="📊 Dashboard", style=discord.ButtonStyle.primary, row=0)
     async def dashboard_btn(self, btn, interaction):
-        await interaction.response.edit_message(embed=_get_dashboard_embed(self.discord_id), view=self)
+        await interaction.response.edit_message(
+            embed=_get_dashboard_embed(self.discord_id), view=self
+        )
 
     @discord.ui.button(label="👤 My Accounts", style=discord.ButtonStyle.secondary, row=0)
     async def accounts_btn(self, btn, interaction):
@@ -81,7 +204,11 @@ class MainPanelView(discord.ui.View):
         else:
             for i, a in enumerate(accounts[:10], 1):
                 status = "✅ Online" if a.get("valid") else "❌ Invalid"
-                embed.add_field(name=f"{i}. {a.get('username', 'Unknown')}", value=f"ID: `{a['id'][:8]}...` | {status}", inline=False)
+                embed.add_field(
+                    name=f"{i}. {a.get('username', 'Unknown')}",
+                    value=f"ID: `{a['id'][:8]}...` | {status}",
+                    inline=False
+                )
         await interaction.response.edit_message(embed=embed, view=AccountsListView(self.discord_id))
 
     @discord.ui.button(label="📨 My Campaigns", style=discord.ButtonStyle.secondary, row=0)
@@ -92,9 +219,13 @@ class MainPanelView(discord.ui.View):
             embed.description = "No campaigns yet."
         else:
             for i, c in enumerate(campaigns[:10], 1):
-                emoji = {"running": "▶️", "paused": "⏸️", "completed": "✅", "failed": "❌"}.get(c.get("status", ""), "❓")
+                emoji = {"running": "▶️", "paused": "⏸️", "completed": "✅", "failed": "❌"}.get(c.get("status",""), "❓")
                 ctype = "📢 Channel" if c["type"] == "channel" else "💬 DM Reply"
-                embed.add_field(name=f"{emoji} {c.get('name', 'Unnamed')}", value=f"{ctype} | Sent: {c.get('messages_sent',0)} | Failed: {c.get('messages_failed',0)}", inline=False)
+                embed.add_field(
+                    name=f"{emoji} {c.get('name','Unnamed')}",
+                    value=f"{ctype} | Sent: {c.get('messages_sent',0)} | Failed: {c.get('messages_failed',0)}",
+                    inline=False
+                )
         await interaction.response.edit_message(embed=embed, view=CampaignsListView(self.discord_id))
 
     @discord.ui.button(label="➕ Add Account", style=discord.ButtonStyle.success, row=1)
@@ -102,16 +233,20 @@ class MainPanelView(discord.ui.View):
         plan = storage.get_user_effective_plan(self.discord_id)
         max_acc = storage.get_plan_max_accounts(plan)
         if len(storage.get_user_accounts(self.discord_id)) >= max_acc:
-            embed = discord.Embed(title="❌ Limit Reached", description=f"Your plan allows {max_acc} accounts.", color=discord.Color.red())
-            await interaction.response.edit_message(embed=embed, view=self)
+            await interaction.response.edit_message(
+                embed=discord.Embed(title="❌ Limit Reached", description=f"Your plan allows {max_acc} accounts.", color=discord.Color.red()),
+                view=self
+            )
             return
         await interaction.response.send_modal(AddAccountModal(self.discord_id))
 
     @discord.ui.button(label="🆕 New Campaign", style=discord.ButtonStyle.success, row=1)
     async def new_campaign_btn(self, btn, interaction):
         if not storage.get_user_accounts(self.discord_id):
-            embed = discord.Embed(title="❌ No Accounts", description="Add an account first.", color=discord.Color.red())
-            await interaction.response.edit_message(embed=embed, view=self)
+            await interaction.response.edit_message(
+                embed=discord.Embed(title="❌ No Accounts", description="Add an account first.", color=discord.Color.red()),
+                view=self
+            )
             return
         embed = discord.Embed(title="🆕 New Campaign", description="Select type:", color=discord.Color.blue())
         await interaction.response.edit_message(embed=embed, view=NewCampaignTypeView(self.discord_id))
@@ -120,10 +255,18 @@ class MainPanelView(discord.ui.View):
     async def plans_btn(self, btn, interaction):
         embed = discord.Embed(title="💎 Plans & Pricing", color=discord.Color.gold())
         for pname, pdata in storage.PLANS.items():
-            price = f"**${pdata['price']}/month**" if pname not in ("free", "lifetime") else ("**$0 Free**" if pname == "free" else "**$30 One-Time**")
+            price = (
+                "**$0 Free**" if pname == "free" else
+                "**$30 One-Time**" if pname == "lifetime" else
+                f"**${pdata['price']}/month**"
+            )
             features = "\n".join(f"• {f.replace('_',' ').title()}" for f in pdata["features"])
-            embed.add_field(name=f"{pdata['name']} — {price}", value=f"Accounts: {pdata['accounts']}\n{features}", inline=False)
-        embed.set_footer(text="Payments via Litecoin (LTC)")
+            embed.add_field(
+                name=f"{pdata['name']} — {price}",
+                value=f"Accounts: {pdata['accounts']}\n{features}",
+                inline=False
+            )
+        embed.set_footer(text="Contact admin to purchase. Use /redeem to activate a key.")
         await interaction.response.edit_message(embed=embed, view=PlansView(self.discord_id))
 
     @discord.ui.button(label="🔑 Redeem Key", style=discord.ButtonStyle.secondary, row=2)
@@ -132,10 +275,12 @@ class MainPanelView(discord.ui.View):
 
     @discord.ui.button(label="🔄 Refresh", style=discord.ButtonStyle.secondary, row=2)
     async def refresh_btn(self, btn, interaction):
-        await interaction.response.edit_message(embed=_get_dashboard_embed(self.discord_id), view=self)
+        await interaction.response.edit_message(
+            embed=_get_dashboard_embed(self.discord_id), view=self
+        )
 
 
-# ─── Accounts List View ───────────────────────────
+# ─── ACCOUNTS ────────────────────────────────────
 
 class AccountsListView(discord.ui.View):
     def __init__(self, discord_id):
@@ -178,7 +323,7 @@ class AccountSelect(discord.ui.Select):
         await interaction.response.edit_message(embed=embed, view=MainPanelView(self.parent.discord_id))
 
 
-# ─── Add Account Modal ────────────────────────────
+# ─── ADD ACCOUNT MODAL ───────────────────────────
 
 class AddAccountModal(discord.ui.Modal):
     def __init__(self, discord_id):
@@ -213,7 +358,7 @@ class AddAccountModal(discord.ui.Modal):
         await interaction.edit_original_response(embed=discord.Embed(title=f"✅ {info['username']} Added!", color=discord.Color.green()))
 
 
-# ─── Campaigns List View ──────────────────────────
+# ─── CAMPAIGNS ───────────────────────────────────
 
 class CampaignsListView(discord.ui.View):
     def __init__(self, discord_id):
@@ -262,7 +407,7 @@ class CampaignResumeSelect(discord.ui.Select):
         await interaction.response.edit_message(embed=discord.Embed(title="▶️ Resumed!", color=discord.Color.green()), view=MainPanelView(self.parent.discord_id))
 
 
-# ─── New Campaign ─────────────────────────────────
+# ─── NEW CAMPAIGN ────────────────────────────────
 
 class NewCampaignTypeView(discord.ui.View):
     def __init__(self, discord_id):
@@ -332,7 +477,13 @@ class ChannelCampaignModal(discord.ui.Modal):
             await interaction.response.edit_message(embed=discord.Embed(title="❌ Missing fields", color=discord.Color.red()))
             return
         cid = str(uuid.uuid4())
-        storage.add_campaign({"id": cid, "discord_id": self.discord_id, "account_id": self.account_id, "name": name, "type": "channel", "channels": channels, "messages": messages, "delay": delay, "status": "idle", "messages_sent": 0, "messages_failed": 0, "created_at": datetime.utcnow().isoformat()})
+        storage.add_campaign({
+            "id": cid, "discord_id": self.discord_id, "account_id": self.account_id,
+            "name": name, "type": "channel", "channels": channels,
+            "messages": messages, "delay": delay,
+            "status": "idle", "messages_sent": 0, "messages_failed": 0,
+            "created_at": datetime.utcnow().isoformat()
+        })
         campaign_engine.start_campaign(cid)
         embed = discord.Embed(title=f"✅ {name} Running!", color=discord.Color.green())
         embed.add_field(name="Channels", value=str(len(channels)), inline=True)
@@ -358,7 +509,12 @@ class DmCampaignModal(discord.ui.Modal):
             await interaction.response.edit_message(embed=discord.Embed(title="❌ Need messages", color=discord.Color.red()))
             return
         cid = str(uuid.uuid4())
-        storage.add_campaign({"id": cid, "discord_id": self.discord_id, "account_id": self.account_id, "name": name, "type": "dm_auto_reply", "messages": messages, "keywords": keywords, "status": "running", "replied_count": 0, "last_replied_id": "", "created_at": datetime.utcnow().isoformat()})
+        storage.add_campaign({
+            "id": cid, "discord_id": self.discord_id, "account_id": self.account_id,
+            "name": name, "type": "dm_auto_reply", "messages": messages,
+            "keywords": keywords, "status": "running", "replied_count": 0,
+            "last_replied_id": "", "created_at": datetime.utcnow().isoformat()
+        })
         campaign_engine.start_dm_responder(self.discord_id)
         embed = discord.Embed(title=f"✅ {name} Active!", color=discord.Color.green())
         embed.add_field(name="Replies", value=str(len(messages)), inline=True)
@@ -366,7 +522,7 @@ class DmCampaignModal(discord.ui.Modal):
         await interaction.response.edit_message(embed=embed, view=MainPanelView(self.discord_id))
 
 
-# ─── Plans View ───────────────────────────────────
+# ─── PLANS VIEW ──────────────────────────────────
 
 class PlansView(discord.ui.View):
     def __init__(self, discord_id):
@@ -375,65 +531,63 @@ class PlansView(discord.ui.View):
 
     @discord.ui.button(label="💳 V1 ($3)", style=discord.ButtonStyle.primary, row=0)
     async def buy_v1(self, btn, interaction):
-        await self._pay(interaction, "v1")
+        await self._pay_info(interaction, "v1")
 
     @discord.ui.button(label="💳 V2 ($5)", style=discord.ButtonStyle.primary, row=0)
     async def buy_v2(self, btn, interaction):
-        await self._pay(interaction, "v2")
+        await self._pay_info(interaction, "v2")
 
     @discord.ui.button(label="💳 V3 ($7)", style=discord.ButtonStyle.primary, row=0)
     async def buy_v3(self, btn, interaction):
-        await self._pay(interaction, "v3")
+        await self._pay_info(interaction, "v3")
 
     @discord.ui.button(label="💳 Lifetime ($30)", style=discord.ButtonStyle.danger, row=1)
     async def buy_lt(self, btn, interaction):
-        await self._pay(interaction, "lifetime")
-
-    @discord.ui.button(label="🎯 Free Trial (10min)", style=discord.ButtonStyle.success, row=1)
-    async def trial_btn(self, btn, interaction):
-        user = storage.get_user(self.discord_id)
-        if user and user.get("trial_used"):
-            await interaction.response.edit_message(embed=discord.Embed(title="❌ Already Used", color=discord.Color.red()))
-            return
-        exp = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
-        storage.upsert_user(self.discord_id, {"trial_active": True, "trial_expires_at": exp, "trial_used": True})
-        await interaction.response.edit_message(embed=discord.Embed(title="🎯 Trial Active!", description="10 min V3 trial started.", color=discord.Color.green()), view=MainPanelView(self.discord_id))
+        await self._pay_info(interaction, "lifetime")
 
     @discord.ui.button(label="🔙 Back", style=discord.ButtonStyle.secondary, row=2)
     async def back_btn(self, btn, interaction):
         await interaction.response.edit_message(embed=_get_dashboard_embed(self.discord_id), view=MainPanelView(self.discord_id))
 
-    async def _pay(self, interaction, plan):
+    async def _pay_info(self, interaction, plan):
         pd = storage.PLANS[plan]
-        sid = str(uuid.uuid4())
-        ltc = f"Lxxxxxxxxxxxxxxxxxxxxxxx"  # Replace with real LTC addr logic
-        storage.add_subscription({"id": sid, "discord_id": self.discord_id, "plan": plan, "amount": pd["price"], "ltc_address": ltc, "status": "pending", "created_at": datetime.utcnow().isoformat(), "expires_at": (datetime.utcnow() + timedelta(hours=2)).isoformat()})
-        embed = discord.Embed(title=f"💳 Buy {pd['name']}", color=discord.Color.gold())
-        embed.add_field(name="Amount", value=f"${pd['price']} LTC", inline=True)
-        embed.add_field(name="Address", value=f"`{ltc}`", inline=False)
-        embed.add_field(name="Expires", value="<t:{}:R>".format(int((datetime.utcnow()+timedelta(hours=2)).timestamp())), inline=True)
-        embed.set_footer(text="Send exact amount. Contact admin after payment.")
+        embed = discord.Embed(title=f"💳 Purchase {pd['name']}", color=discord.Color.gold())
+        embed.add_field(name="Price", value=f"**${pd['price']}**", inline=True)
+        embed.add_field(name="Accounts", value=str(pd["accounts"]), inline=True)
+        embed.description = "Contact an admin to purchase. They will provide a license key.\n\nThen use **/redeem** or the Redeem Key button to activate."
+        embed.set_footer(text="Admin will generate a key via /genkey")
         await interaction.response.edit_message(embed=embed, view=self)
 
 
-# ─── Redeem Key Modal ─────────────────────────────
+# ─── REDEEM KEY MODAL ────────────────────────────
 
 class RedeemKeyModal(discord.ui.Modal):
     def __init__(self, discord_id):
-        super().__init__(title="Redeem Key")
+        super().__init__(title="Redeem License Key")
         self.discord_id = discord_id
-        self.add_item(discord.ui.InputText(label="Key", placeholder="HUNTER-XXXX-XXXX-XXXX", required=True, min_length=10, max_length=50))
+        self.add_item(discord.ui.InputText(label="License Key", placeholder="HUNTER-XXXX-XXXX-XXXX", required=True, min_length=10, max_length=50))
 
     async def callback(self, interaction):
         key = self.children[0].value.strip()
         result = storage.redeem_key(key, self.discord_id)
         if not result:
-            embed = discord.Embed(title="❌ Invalid or Used Key", color=discord.Color.red())
-        else:
-            plan = result["plan"]
-            sid = str(uuid.uuid4())
-            exp = "2099-12-31T23:59:59" if plan == "lifetime" else (datetime.utcnow() + timedelta(days=30)).isoformat()
-            storage.add_subscription({"id": sid, "discord_id": self.discord_id, "plan": plan, "amount": 0, "status": "confirmed", "created_at": datetime.utcnow().isoformat(), "expires_at": exp})
-            embed = discord.Embed(title=f"✅ {storage.get_plan_name(plan)} Activated!", color=discord.Color.green())
-            embed.add_field(name="Accounts", value=str(storage.get_plan_max_accounts(plan)), inline=True)
-        await interaction.response.edit_message(embed=embed, view=MainPanelView(self.discord_id))
+            embed = discord.Embed(title="❌ Invalid or Already Used Key", color=discord.Color.red())
+            await interaction.response.edit_message(embed=embed)
+            return
+
+        plan = result["plan"]
+        sid = str(uuid.uuid4())
+        exp = "2099-12-31T23:59:59" if plan == "lifetime" else (datetime.utcnow() + timedelta(days=30)).isoformat()
+        storage.add_subscription({
+            "id": sid, "discord_id": self.discord_id, "plan": plan,
+            "amount": 0, "status": "confirmed",
+            "created_at": datetime.utcnow().isoformat(), "expires_at": exp
+        })
+
+        embed = discord.Embed(
+            title=f"✅ {storage.get_plan_name(plan)} Activated!",
+            description=f"Max {storage.get_plan_max_accounts(plan)} accounts. Full access granted!",
+            color=discord.Color.green()
+        )
+        full_embed = _get_dashboard_embed(self.discord_id)
+        await interaction.response.edit_message(embed=full_embed, view=MainPanelView(self.discord_id))
