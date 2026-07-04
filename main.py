@@ -172,7 +172,7 @@ async def campaign_create(
     msg_list = [{"content": m} for m in raw_message_list]
     cid = str(__import__("uuid").uuid4())
 
-    if ctype == "channel":
+if ctype == "channel":
     ch_list = [c.strip() for c in channels.split(",") if c.strip()]
     if not ch_list:
         await ctx.respond("❌ Need at least 1 channel.", ephemeral=True)
