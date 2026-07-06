@@ -471,18 +471,18 @@ class ChannelCampaignModal(discord.ui.Modal):
         ))
         self.add_item(discord.ui.InputText(
             label="Channel IDs (comma-separated)",
-            placeholder="123456789,987654321",
+            placeholder="123456789, 987654321",
             required=True
         ))
         self.add_item(discord.ui.InputText(
             label="Messages (separate with ||)",
             style=discord.InputTextStyle.long,
-            placeholder="Hello! This is my first message. It can have\nmultiple lines and paragraphs.\n\nSee? All one message!\n||\nThis is my second message.\n||\nThird message here.",
+            placeholder="Hello! First message with multiple lines...",
             required=True
         ))
         self.add_item(discord.ui.InputText(
-            label="Image URLs (optional, one per message)",
-            placeholder="https://i.imgur.com/abc.jpg || https://i.imgur.com/xyz.png\nLeave empty or match number of messages",
+            label="Image URLs (one per msg, || sep)",
+            placeholder="https://i.imgur.com/img.jpg",
             style=discord.InputTextStyle.long,
             required=False
         ))
@@ -497,16 +497,13 @@ class ChannelCampaignModal(discord.ui.Modal):
         name = self.children[0].value.strip()
         channels = [c.strip() for c in self.children[1].value.split(",") if c.strip()]
         
-        # Messages separated by || — each block is ONE message (preserving newlines)
+        # Messages separated by ||
         raw_messages = self.children[2].value.strip()
         raw_message_list = [m.strip() for m in raw_messages.split("||") if m.strip()]
         
-        # Image URLs — also separated by ||, one per message
+        # Image URLs
         raw_images = self.children[3].value.strip()
-        if raw_images:
-            image_list = [img.strip() for img in raw_images.split("||") if img.strip()]
-        else:
-            image_list = []
+        image_list = [img.strip() for img in raw_images.split("||") if img.strip()] if raw_images else []
         
         # Build message objects
         messages = []
@@ -533,7 +530,7 @@ class ChannelCampaignModal(discord.ui.Modal):
             await interaction.response.edit_message(
                 embed=discord.Embed(
                     title="❌ Image Attachments Require V2+",
-                    description=f"Your plan ({storage.get_plan_name(plan)}) doesn't support image attachments. Upgrade to V2 ($5/mo) or higher.",
+                    description=f"Your plan ({storage.get_plan_name(plan)}) doesn't support image attachments.",
                     color=discord.Color.red()
                 ),
                 view=MainPanelView(self.discord_id)
@@ -541,12 +538,13 @@ class ChannelCampaignModal(discord.ui.Modal):
             return
         
         cid = str(uuid.uuid4())
+        from datetime import timezone
         storage.add_campaign({
             "id": cid, "discord_id": self.discord_id, "account_id": self.account_id,
             "name": name, "type": "channel", "channels": channels,
             "messages": messages, "delay": delay,
             "status": "idle", "messages_sent": 0, "messages_failed": 0,
-            "created_at": datetime.utcnow().isoformat()
+            "created_at": datetime.now(timezone.utc).isoformat()
         })
         campaign_engine.start_campaign(cid)
         
@@ -573,23 +571,43 @@ class DmCampaignModal(discord.ui.Modal):
         super().__init__(title="New DM Auto-Reply")
         self.discord_id = did
         self.account_id = aid
-        self.add_item(discord.ui.InputText(label="Name", placeholder="Auto-Reply", max_length=50, required=True))
-        self.add_item(discord.ui.InputText(label="Reply Messages (one per line)", style=discord.InputTextStyle.long, placeholder="Thanks!\nI'll reply soon.", required=True))
-        self.add_item(discord.ui.InputText(label="Keywords (comma-sep, optional)", placeholder="help,support,hello", required=False))
+        self.add_item(discord.ui.InputText(
+            label="Campaign Name",
+            placeholder="Auto-Reply Campaign",
+            max_length=50,
+            required=True
+        ))
+        self.add_item(discord.ui.InputText(
+            label="Reply Messages (one per line)",
+            style=discord.InputTextStyle.long,
+            placeholder="Thanks for your message!",
+            required=True
+        ))
+        self.add_item(discord.ui.InputText(
+            label="Keywords (comma-sep, optional)",
+            placeholder="help, support, hello",
+            required=False
+        ))
 
     async def callback(self, interaction):
         name = self.children[0].value.strip()
-        messages = [m.strip() for m in self.children[1].value.split("\n") if m.strip()]
-        keywords = [k.strip().lower() for k in self.children[2].value.split(",") if k.strip()] if self.children[2].value.strip() else []
+        messages_raw = self.children[1].value.strip()
+        keywords_raw = self.children[2].value.strip()
+        
+        messages = [m.strip() for m in messages_raw.split("\n") if m.strip()]
+        keywords = [k.strip().lower() for k in keywords_raw.split(",") if k.strip()] if keywords_raw else []
+        
         if not messages:
             await interaction.response.edit_message(embed=discord.Embed(title="❌ Need messages", color=discord.Color.red()))
             return
+        
         cid = str(uuid.uuid4())
+        from datetime import timezone
         storage.add_campaign({
             "id": cid, "discord_id": self.discord_id, "account_id": self.account_id,
             "name": name, "type": "dm_auto_reply", "messages": messages,
             "keywords": keywords, "status": "running", "replied_count": 0,
-            "last_replied_id": "", "created_at": datetime.utcnow().isoformat()
+            "last_replied_id": "", "created_at": datetime.now(timezone.utc).isoformat()
         })
         campaign_engine.start_dm_responder(self.discord_id)
         embed = discord.Embed(title=f"✅ {name} Active!", color=discord.Color.green())
