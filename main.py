@@ -308,6 +308,122 @@ async def extend(
     )
     await ctx.respond(embed=embed)
 
+@bot.slash_command(name="backup", description="Create a backup of all data (admin-only)")
+async def backup(ctx: discord.ApplicationContext):
+    """Create a timestamped backup ZIP of all data files."""
+    load_admin_ids()
+    if not is_admin(str(ctx.author.id)):
+        await ctx.respond("❌ Unauthorized.", ephemeral=True)
+        return
+    
+    import shutil
+    import io
+    
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    backup_filename = f"hunter_backup_{timestamp}.zip"
+    
+    # Create ZIP in memory
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for fname in storage.FILES:
+            filepath = os.path.join(storage.DATA_DIR, fname)
+            if os.path.exists(filepath):
+                zf.write(filepath, fname)
+        
+        # Also include fernet key
+        fernet_path = "data/fernet.key"
+        if os.path.exists(fernet_path):
+            zf.write(fernet_path, "fernet.key")
+        
+        # Add a manifest with timestamp info
+        manifest = f"Backup created at: {datetime.now(timezone.utc).isoformat()}\n"
+        manifest += f"Total files: {len(storage.FILES) + 1}\n"
+        for fname in storage.FILES:
+            filepath = os.path.join(storage.DATA_DIR, fname)
+            if os.path.exists(filepath):
+                size = os.path.getsize(filepath)
+                manifest += f"  {fname}: {size} bytes\n"
+        zf.writestr("manifest.txt", manifest)
+    
+    zip_buffer.seek(0)
+    
+    await ctx.respond(
+        embed=discord.Embed(
+            title="✅ Backup Created",
+            description=f"`{backup_filename}` ({zip_buffer.getbuffer().nbytes / 1024:.1f} KB)",
+            color=discord.Color.green()
+        ),
+        file=discord.File(zip_buffer, backup_filename),
+        ephemeral=True
+    )
+
+
+@bot.slash_command(name="restore", description="Restore data from a backup file (admin-only)")
+async def restore(
+    ctx: discord.ApplicationContext,
+    backup_file: discord.Option(discord.Attachment, "Upload the backup ZIP file")
+):
+    """Restore all data from a previously created backup ZIP."""
+    load_admin_ids()
+    if not is_admin(str(ctx.author.id)):
+        await ctx.respond("❌ Unauthorized.", ephemeral=True)
+        return
+    
+    if not backup_file.filename.endswith(".zip"):
+        await ctx.respond("❌ Please upload a .zip backup file.", ephemeral=True)
+        return
+    
+    await ctx.defer(ephemeral=True)
+    
+    try:
+        # Download the file
+        zip_bytes = await backup_file.read()
+        
+        import zipfile
+        import io
+        
+        # Create a backup of current state first (safety)
+        safety_timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        safety_backup = f"data/pre_restore_{safety_timestamp}"
+        os.makedirs(safety_backup, exist_ok=True)
+        for fname in storage.FILES:
+            src = os.path.join(storage.DATA_DIR, fname)
+            if os.path.exists(src):
+                shutil.copy2(src, os.path.join(safety_backup, fname))
+        fernet_src = "data/fernet.key"
+        if os.path.exists(fernet_src):
+            shutil.copy2(fernet_src, os.path.join(safety_backup, "fernet.key"))
+        
+        # Now restore from uploaded ZIP
+        restored_files = []
+        with zipfile.ZipFile(io.BytesIO(zip_bytes), 'r') as zf:
+            for fname in zf.namelist():
+                if fname in storage.FILES or fname == "fernet.key":
+                    # Extract to data directory
+                    zf.extract(fname, storage.DATA_DIR)
+                    restored_files.append(fname)
+        
+        # Reload data by reinitializing storage
+        storage._init()
+        
+        embed = discord.Embed(
+            title="✅ Data Restored Successfully!",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Restored Files", value="\n".join(restored_files) or "None", inline=False)
+        embed.add_field(name="Safety Backup", value=f"Saved to `{safety_backup}/`", inline=False)
+        
+        await ctx.respond(embed=embed, ephemeral=True)
+        
+    except Exception as e:
+        await ctx.respond(
+            embed=discord.Embed(
+                title="❌ Restore Failed",
+                description=f"Error: {str(e)}",
+                color=discord.Color.red()
+            ),
+            ephemeral=True
+        )
 
 async def expiration_loop():
     await bot.wait_until_ready()
