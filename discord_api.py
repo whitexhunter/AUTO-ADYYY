@@ -20,22 +20,50 @@ def validate_token(token):
 def send_message(token, channel_id, content, image_url=None):
     """Send a message to a channel using a user token.
     
-    If image_url is provided, sends the message with an embedded image.
+    If image_url is provided, downloads the image and sends as attachment.
     """
     try:
-        data = {"content": content}
-        
         if image_url:
-            # Send as embed with image
-            data["embeds"] = [{"image": {"url": image_url}}]
-        
-        r = requests.post(
-            f"{API_BASE}/channels/{channel_id}/messages",
-            headers=_headers(token),
-            json=data,
-            timeout=10
-        )
-        return {"status": r.status_code, "data": r.json() if r.text else {}}
+            # Download the image first
+            img_resp = requests.get(image_url, timeout=10)
+            if img_resp.status_code == 200:
+                # Get filename from URL
+                filename = image_url.split("/")[-1].split("?")[0]
+                if not filename or "." not in filename:
+                    filename = "image.png"
+                
+                # Determine content type
+                content_type = img_resp.headers.get("content-type", "image/png")
+                
+                # Upload as attachment using multipart form data
+                files = {
+                    "file": (filename, img_resp.content, content_type)
+                }
+                payload = {"content": content} if content else {"content": ""}
+                
+                r = requests.post(
+                    f"{API_BASE}/channels/{channel_id}/messages",
+                    headers={
+                        "Authorization": token,
+                        "User-Agent": "DiscordBot (HUNTER, 1.0.0)"
+                    },
+                    data=payload,
+                    files=files,
+                    timeout=15
+                )
+                return {"status": r.status_code, "data": r.json() if r.text else {}}
+            else:
+                # Image download failed, send just the text with a note
+                return send_message(token, channel_id, f"{content}\n\n[Image failed to load: {image_url}]")
+        else:
+            # No image, just send text
+            r = requests.post(
+                f"{API_BASE}/channels/{channel_id}/messages",
+                headers=_headers(token),
+                json={"content": content},
+                timeout=10
+            )
+            return {"status": r.status_code, "data": r.json() if r.text else {}}
     except Exception as e:
         return {"status": 0, "error": str(e)}
 
