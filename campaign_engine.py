@@ -14,76 +14,113 @@ _responder_threads = {}
 
 def _run_campaign(campaign_id):
     """Background thread that runs a channel messaging campaign."""
-    campaign = storage.get_campaign_by_id(campaign_id)
-    if not campaign:
-        return
-
-    storage.update_campaign(campaign_id, {"status": "running"})
-
-    account = storage.get_account_by_id(campaign["account_id"])
-    if not account:
-        storage.update_campaign(campaign_id, {"status": "failed", "error": "Account not found"})
-        return
-
+    print(f"[CAMPAIGN {campaign_id[:8]}] Thread started")
+    
     try:
-        token = decrypt_token(account["encrypted_token"])
-    except:
-        storage.update_campaign(campaign_id, {"status": "failed", "error": "Token decryption failed"})
-        return
-
-    channels = campaign["channels"]
-    messages = campaign["messages"]
-    delay = max(campaign.get("delay", 1), 1)
-
-    # For each message, send to all channels, then delay
-    for msg_index, msg_obj in enumerate(messages):
-        content = msg_obj.get("content", "")
-        image_url = msg_obj.get("image_url", None)
+        campaign = storage.get_campaign_by_id(campaign_id)
+        if not campaign:
+            print(f"[CAMPAIGN {campaign_id[:8]}] Campaign not found in storage")
+            return
         
-        for ch_id in channels:
-            # Check if paused
-            if campaign_id in _running_campaigns and not _running_campaigns[campaign_id]:
-                storage.update_campaign(campaign_id, {"status": "paused"})
-                _running_campaigns.pop(campaign_id, None)
-                _campaign_threads.pop(campaign_id, None)
-                return
+        print(f"[CAMPAIGN {campaign_id[:8]}] Found campaign: {campaign.get('name')}")
+        print(f"[CAMPAIGN {campaign_id[:8]}] Channels: {campaign['channels']}")
+        print(f"[CAMPAIGN {campaign_id[:8]}] Messages: {len(campaign['messages'])}")
+        print(f"[CAMPAIGN {campaign_id[:8]}] Delay: {campaign.get('delay', 1)}s")
 
-            result = discord_api.send_message(token, ch_id, content, image_url)
+        storage.update_campaign(campaign_id, {"status": "running"})
+
+        account = storage.get_account_by_id(campaign["account_id"])
+        if not account:
+            print(f"[CAMPAIGN {campaign_id[:8]}] Account not found")
+            storage.update_campaign(campaign_id, {"status": "failed", "error": "Account not found"})
+            return
+
+        print(f"[CAMPAIGN {campaign_id[:8]}] Using account: {account.get('username', 'Unknown')}")
+
+        try:
+            token = decrypt_token(account["encrypted_token"])
+            print(f"[CAMPAIGN {campaign_id[:8]}] Token decrypted successfully")
+        except Exception as e:
+            print(f"[CAMPAIGN {campaign_id[:8]}] Token decryption failed: {e}")
+            storage.update_campaign(campaign_id, {"status": "failed", "error": f"Token decryption failed: {e}"})
+            return
+
+        channels = campaign["channels"]
+        messages = campaign["messages"]
+        delay = max(campaign.get("delay", 1), 1)
+
+        total_to_send = len(channels) * len(messages)
+        print(f"[CAMPAIGN {campaign_id[:8]}] Will send {total_to_send} total messages")
+
+        for msg_index, msg_obj in enumerate(messages):
+            content = msg_obj.get("content", "")
+            image_url = msg_obj.get("image_url", None)
             
-            current = storage.get_campaign_by_id(campaign_id)
-            if current:
-                if result.get("status") == 200:
-                    storage.update_campaign(campaign_id, {
-                        "messages_sent": current.get("messages_sent", 0) + 1
-                    })
-                else:
-                    storage.update_campaign(campaign_id, {
-                        "messages_failed": current.get("messages_failed", 0) + 1
-                    })
+            print(f"[CAMPAIGN {campaign_id[:8]}] Sending message {msg_index + 1}/{len(messages)}: '{content[:50]}...'")
+            
+            for ch_index, ch_id in enumerate(channels):
+                # Check if paused
+                if campaign_id in _running_campaigns and not _running_campaigns[campaign_id]:
+                    print(f"[CAMPAIGN {campaign_id[:8]}] Paused by user")
+                    storage.update_campaign(campaign_id, {"status": "paused"})
+                    _running_campaigns.pop(campaign_id, None)
+                    _campaign_threads.pop(campaign_id, None)
+                    return
 
-        # Delay between messages (not between channels)
-        if msg_index < len(messages) - 1:
-            time.sleep(delay)
+                print(f"[CAMPAIGN {campaign_id[:8]}] Sending to channel {ch_id} ({ch_index + 1}/{len(channels)})")
+                
+                result = discord_api.send_message(token, ch_id, content, image_url)
+                
+                print(f"[CAMPAIGN {campaign_id[:8]}] Result: status={result.get('status')}")
+                
+                current = storage.get_campaign_by_id(campaign_id)
+                if current:
+                    if result.get("status") == 200:
+                        storage.update_campaign(campaign_id, {
+                            "messages_sent": current.get("messages_sent", 0) + 1
+                        })
+                        print(f"[CAMPAIGN {campaign_id[:8]}] Sent successfully")
+                    else:
+                        storage.update_campaign(campaign_id, {
+                            "messages_failed": current.get("messages_failed", 0) + 1
+                        })
+                        print(f"[CAMPAIGN {campaign_id[:8]}] Send failed with status {result.get('status')}")
 
-    # Mark as completed
-    camp = storage.get_campaign_by_id(campaign_id)
-    if camp and camp.get("status") == "running":
+            # Delay between messages
+            if msg_index < len(messages) - 1:
+                print(f"[CAMPAIGN {campaign_id[:8]}] Waiting {delay}s before next message...")
+                time.sleep(delay)
+
+        # Mark as completed
+        print(f"[CAMPAIGN {campaign_id[:8]}] All messages sent, marking as completed")
         storage.update_campaign(campaign_id, {
             "status": "completed",
             "completed_at": datetime.now(timezone.utc).isoformat()
         })
 
-    _running_campaigns.pop(campaign_id, None)
-    _campaign_threads.pop(campaign_id, None)
+    except Exception as e:
+        print(f"[CAMPAIGN {campaign_id[:8]}] CRASHED: {e}")
+        import traceback
+        traceback.print_exc()
+        storage.update_campaign(campaign_id, {
+            "status": "failed",
+            "error": str(e)
+        })
+    finally:
+        _running_campaigns.pop(campaign_id, None)
+        _campaign_threads.pop(campaign_id, None)
+        print(f"[CAMPAIGN {campaign_id[:8]}] Thread finished")
 
 
 def start_campaign(campaign_id):
     if campaign_id in _campaign_threads and _campaign_threads[campaign_id].is_alive():
+        print(f"[CAMPAIGN {campaign_id[:8]}] Campaign already running")
         return False
     _running_campaigns[campaign_id] = True
     t = threading.Thread(target=_run_campaign, args=(campaign_id,), daemon=True)
     _campaign_threads[campaign_id] = t
     t.start()
+    print(f"[CAMPAIGN {campaign_id[:8]}] Thread launched")
     return True
 
 
@@ -128,10 +165,7 @@ def _run_dm_responder(discord_id):
                     if msgs:
                         last_msg = msgs[0]
                         author = last_msg.get("author", {})
-                        if isinstance(author, dict):
-                            author_id = str(author.get("id", ""))
-                        else:
-                            author_id = str(author)
+                        author_id = str(author.get("id", "")) if isinstance(author, dict) else str(author)
                         
                         if author_id != str(account.get("discord_user_id", "")):
                             last_replied = camp.get("last_replied_id", "")
