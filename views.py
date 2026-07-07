@@ -546,21 +546,14 @@ class ChannelCampaignModal(discord.ui.Modal):
             "status": "idle", "messages_sent": 0, "messages_failed": 0,
             "created_at": datetime.now(timezone.utc).isoformat()
         })
-        campaign_engine.start_campaign(cid)
         
-        embed = discord.Embed(title=f"✅ {name} Running!", color=discord.Color.green())
+        # Start the campaign
+        started = campaign_engine.start_campaign(cid)
+        
+        embed = discord.Embed(title=f"✅ {name} {'Running!' if started else 'Created!'}", color=discord.Color.green())
+        embed.add_field(name="Status", value="Running" if started else "Pending", inline=True)
         embed.add_field(name="Channels", value=str(len(channels)), inline=True)
         embed.add_field(name="Messages", value=str(len(messages)), inline=True)
-        
-        msg_preview = []
-        for i, m in enumerate(messages[:3]):
-            content_preview = m["content"][:50] + "..." if len(m["content"]) > 50 else m["content"]
-            has_img = " 🖼️" if m.get("image_url") else ""
-            msg_preview.append(f"**MSG {i+1}:** {content_preview}{has_img}")
-        if len(messages) > 3:
-            msg_preview.append(f"... and {len(messages)-3} more")
-        embed.add_field(name="Preview", value="\n".join(msg_preview), inline=False)
-        
         embed.add_field(name="Delay", value=f"{delay}s", inline=True)
         
         await interaction.response.edit_message(embed=embed, view=MainPanelView(self.discord_id))
