@@ -1,6 +1,6 @@
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 import storage
 import discord_api
 from crypto_utils import decrypt_token
@@ -32,35 +32,45 @@ def _run_campaign(campaign_id):
         return
 
     channels = campaign["channels"]
-    messages = campaign["messages"]  # list of dicts: [{"content": "...", "image_url": "..."}]
+    messages = campaign["messages"]
     delay = max(campaign.get("delay", 1), 1)
 
-    for ch_id in channels:
-        for msg_obj in messages:
+    # For each message, send to all channels, then delay
+    for msg_index, msg_obj in enumerate(messages):
+        content = msg_obj.get("content", "")
+        image_url = msg_obj.get("image_url", None)
+        
+        for ch_id in channels:
+            # Check if paused
             if campaign_id in _running_campaigns and not _running_campaigns[campaign_id]:
                 storage.update_campaign(campaign_id, {"status": "paused"})
+                _running_campaigns.pop(campaign_id, None)
+                _campaign_threads.pop(campaign_id, None)
                 return
 
-            content = msg_obj.get("content", "")
-            image_url = msg_obj.get("image_url", None)
-            
             result = discord_api.send_message(token, ch_id, content, image_url)
-            sent_ok = result.get("status") == 200
+            
+            current = storage.get_campaign_by_id(campaign_id)
+            if current:
+                if result.get("status") == 200:
+                    storage.update_campaign(campaign_id, {
+                        "messages_sent": current.get("messages_sent", 0) + 1
+                    })
+                else:
+                    storage.update_campaign(campaign_id, {
+                        "messages_failed": current.get("messages_failed", 0) + 1
+                    })
 
-            stats = storage.get_campaign_by_id(campaign_id)
-            if stats:
-                storage.update_campaign(campaign_id, {
-                    "messages_sent": stats.get("messages_sent", 0) + (1 if sent_ok else 0),
-                    "messages_failed": stats.get("messages_failed", 0) + (0 if sent_ok else 1),
-                })
-
+        # Delay between messages (not between channels)
+        if msg_index < len(messages) - 1:
             time.sleep(delay)
 
+    # Mark as completed
     camp = storage.get_campaign_by_id(campaign_id)
     if camp and camp.get("status") == "running":
         storage.update_campaign(campaign_id, {
             "status": "completed",
-            "completed_at": datetime.utcnow().isoformat()
+            "completed_at": datetime.now(timezone.utc).isoformat()
         })
 
     _running_campaigns.pop(campaign_id, None)
@@ -117,10 +127,13 @@ def _run_dm_responder(discord_id):
                     msgs = discord_api.get_channel_messages(token, dm["id"], limit=1)
                     if msgs:
                         last_msg = msgs[0]
-                        author_id = str(last_msg["author"].get("id", "")) if isinstance(last_msg["author"], dict) else str(last_msg.get("author", {}))
+                        author = last_msg.get("author", {})
+                        if isinstance(author, dict):
+                            author_id = str(author.get("id", ""))
+                        else:
+                            author_id = str(author)
                         
-                        # Make sure it's not our own account
-                        if str(last_msg.get("author", {}).get("id", "")) != str(account.get("discord_user_id", "")):
+                        if author_id != str(account.get("discord_user_id", "")):
                             last_replied = camp.get("last_replied_id", "")
                             if last_msg["id"] != last_replied:
                                 keywords = camp.get("keywords", [])
