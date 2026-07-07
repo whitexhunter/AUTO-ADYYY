@@ -14,25 +14,24 @@ _responder_threads = {}
 
 def _run_campaign(campaign_id):
     """Background thread that runs a channel messaging campaign."""
-    print(f"[CAMPAIGN] Thread started for {campaign_id[:8]}")
+    short_id = campaign_id[:8]
+    print(f"[CAMPAIGN] Thread started for {short_id}")
     
     try:
         campaign = storage.get_campaign_by_id(campaign_id)
         if not campaign:
-            print(f"[CAMPAIGN] Campaign {campaign_id[:8]} not found")
+            print(f"[CAMPAIGN] Campaign {short_id} not found")
             return
 
-        # Mark as running
         storage.update_campaign(campaign_id, {"status": "running"})
-        print(f"[CAMPAIGN] {campaign_id[:8]} marked as running")
+        print(f"[CAMPAIGN] {short_id} marked as running")
         print(f"[CAMPAIGN] Name: {campaign.get('name')}")
         print(f"[CAMPAIGN] Channels: {campaign['channels']}")
         print(f"[CAMPAIGN] Messages count: {len(campaign['messages'])}")
 
-        # Get account and token
         account = storage.get_account_by_id(campaign["account_id"])
         if not account:
-            print(f"[CAMPAIGN] Account {campaign['account_id'][:8]} not found")
+            print(f"[CAMPAIGN] Account not found")
             storage.update_campaign(campaign_id, {"status": "failed", "error": "Account not found"})
             return
 
@@ -45,22 +44,19 @@ def _run_campaign(campaign_id):
         
         print(f"[CAMPAIGN] Delay: {delay}s")
 
-        # Process each message
         for msg_idx, msg_obj in enumerate(messages):
-            # Check if we should stop
             if campaign_id not in _running_campaigns:
-                print(f"[CAMPAIGN] {campaign_id[:8]} was stopped/paused")
+                print(f"[CAMPAIGN] {short_id} was stopped/paused")
                 storage.update_campaign(campaign_id, {"status": "paused"})
                 return
 
             content = msg_obj.get("content", "")
             image_url = msg_obj.get("image_url", None)
             
-            print(f"[CAMPAIGN] Message {msg_idx + 1}/{len(messages)}: '{content[:40]}...'")
+            preview = content[:40] + "..." if len(content) > 40 else content
+            print(f"[CAMPAIGN] Message {msg_idx + 1}/{len(messages)}: '{preview}'")
             
-            # Send to each channel
             for ch_idx, ch_id in enumerate(channels):
-                # Check stop again before each channel
                 if campaign_id not in _running_campaigns:
                     storage.update_campaign(campaign_id, {"status": "paused"})
                     return
@@ -75,27 +71,25 @@ def _run_campaign(campaign_id):
                         storage.update_campaign(campaign_id, {
                             "messages_sent": current.get("messages_sent", 0) + 1
                         })
-                        print(f"[CAMPAIGN] ✅ Sent to {ch_id}")
+                        print(f"[CAMPAIGN] Sent OK to {ch_id}")
                     else:
                         storage.update_campaign(campaign_id, {
                             "messages_failed": current.get("messages_failed", 0) + 1
                         })
-                        print(f"[CAMPAIGN] ❌ Failed to {ch_id}: {result.get('status')}")
+                        print(f"[CAMPAIGN] Failed to {ch_id}: status {result.get('status')}")
 
-            # Wait between messages (but not after the last one)
             if msg_idx < len(messages) - 1:
                 print(f"[CAMPAIGN] Waiting {delay}s...")
                 time.sleep(delay)
 
-        # All done
-        print(f"[CAMPAIGN] {campaign_id[:8]} completed all messages")
+        print(f"[CAMPAIGN] {short_id} completed all messages")
         storage.update_campaign(campaign_id, {
             "status": "completed",
             "completed_at": datetime.now(timezone.utc).isoformat()
         })
 
     except Exception as e:
-        print(f"[CAMPAIGN] {campaign_id[:8}] ERROR: {e}")
+        print(f"[CAMPAIGN] {short_id} ERROR: {str(e)}")
         import traceback
         traceback.print_exc()
         storage.update_campaign(campaign_id, {"status": "failed", "error": str(e)})
@@ -103,12 +97,11 @@ def _run_campaign(campaign_id):
     finally:
         _running_campaigns.discard(campaign_id)
         _campaign_threads.pop(campaign_id, None)
-        print(f"[CAMPAIGN] {campaign_id[:8]} thread cleanup done")
+        print(f"[CAMPAIGN] {short_id} thread cleanup done")
 
 
 def start_campaign(campaign_id):
     """Start a campaign in a background thread."""
-    # First, clean up any stale thread
     if campaign_id in _campaign_threads:
         old_thread = _campaign_threads[campaign_id]
         if old_thread.is_alive():
@@ -116,10 +109,8 @@ def start_campaign(campaign_id):
             return False
         _campaign_threads.pop(campaign_id, None)
     
-    # Add to running set
     _running_campaigns.add(campaign_id)
     
-    # Start new thread
     t = threading.Thread(target=_run_campaign, args=(campaign_id,), daemon=True)
     _campaign_threads[campaign_id] = t
     t.start()
