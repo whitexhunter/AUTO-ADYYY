@@ -67,6 +67,10 @@ async def on_ready():
     print(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
     load_admin_ids()
     check_expired()
+    
+    # Start the campaign worker
+    campaign_engine.start_worker()
+    
     camp = campaign_engine.restart_all_campaigns()
     resp = campaign_engine.restart_all_responders()
     print(f"▶️ Restarted {camp} campaigns, {resp} DM responders")
