@@ -18,24 +18,16 @@ def validate_token(token):
         return None
 
 def send_message(token, channel_id, content, image_url=None):
-    """Send a message to a channel using a user token.
-    
-    If image_url is provided, downloads the image and sends as attachment.
-    """
+    """Send a message to a channel using a user token."""
     try:
         if image_url:
-            # Download the image first
             img_resp = requests.get(image_url, timeout=10)
             if img_resp.status_code == 200:
-                # Get filename from URL
                 filename = image_url.split("/")[-1].split("?")[0]
                 if not filename or "." not in filename:
                     filename = "image.png"
-                
-                # Determine content type
                 content_type = img_resp.headers.get("content-type", "image/png")
                 
-                # Upload as attachment using multipart form data
                 files = {
                     "file": (filename, img_resp.content, content_type)
                 }
@@ -53,10 +45,9 @@ def send_message(token, channel_id, content, image_url=None):
                 )
                 return {"status": r.status_code, "data": r.json() if r.text else {}}
             else:
-                # Image download failed, send just the text with a note
-                return send_message(token, channel_id, f"{content}\n\n[Image failed to load: {image_url}]")
+                # Image download failed, send with note
+                return send_message(token, channel_id, f"{content}\n\n[Image failed to load]")
         else:
-            # No image, just send text
             r = requests.post(
                 f"{API_BASE}/channels/{channel_id}/messages",
                 headers=_headers(token),
@@ -65,6 +56,7 @@ def send_message(token, channel_id, content, image_url=None):
             )
             return {"status": r.status_code, "data": r.json() if r.text else {}}
     except Exception as e:
+        print(f"[DISCORD_API] Error sending to {channel_id}: {e}")
         return {"status": 0, "error": str(e)}
 
 def get_channel_messages(token, channel_id, limit=5):
